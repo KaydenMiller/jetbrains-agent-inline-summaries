@@ -22,6 +22,18 @@ on:
 permissions:
   contents: write # pushes the version bump, pushes the tag, creates the release
 
+# One release at a time. Two merges landing close together used to interleave: the first
+# run checked out master at its own commit, the second pushed on top, and the first run's
+# bump push was then rejected non-fast-forward — it passed build, test and verify and
+# still produced no release (observed on run 32517356392). Serialising means the second
+# run's checkout already contains the first run's bump.
+#
+# cancel-in-progress is false on purpose: a release job that has already pushed a tag must
+# not be killed half-done.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -129,6 +141,12 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add .claude-plugin/plugin.json
           git diff --cached --quiet || git commit -m "why-notes ${VERSION} [skip ci]"
+          # Second layer under `concurrency` above: if a push still lands between this
+          # job's checkout and here, rebase the one-file bump onto it rather than failing.
+          # The bump touches only plugin.json, which release.yml alone ever edits, so this
+          # rebase has nothing to conflict with. Tag after the rebase so it points at the
+          # commit that is actually published.
+          git pull --rebase --autostash origin "${{ github.ref_name }}"
           git tag "v${VERSION}"
           git push origin "HEAD:${{ github.ref_name }}"
           git push origin "v${VERSION}"
