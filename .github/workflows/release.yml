@@ -1,0 +1,137 @@
+name: release
+
+# Every push to the default branch cuts a release of both halves at one version.
+#
+# paths-ignore is the first of three loop guards: the only file this workflow pushes back
+# is .claude-plugin/plugin.json, and a push whose every changed path is ignored starts no
+# run. See the "Commit and tag the version bump" step for the other two guards.
+on:
+  push:
+    branches: [master]
+    paths-ignore:
+      - '.claude-plugin/plugin.json'
+  workflow_dispatch:
+
+permissions:
+  contents: write # pushes the version bump, pushes the tag, creates the release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Check out the branch itself, not a detached HEAD: the bump commit is pushed
+          # back to it at the end of the job.
+          ref: ${{ github.ref_name }}
+
+      - name: Resolve the version both halves will carry
+        # github.run_number is monotonic per workflow and needs no tag parsing and no
+        # state to track. One value, used for the plugin zip, the Claude plugin manifest,
+        # the git tag and the release.
+        run: echo "VERSION=0.1.${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - name: Neutralise the developer-local Gradle Java home
+        # gradle.properties pins org.gradle.java.home to a Homebrew path that exists on
+        # Kayden's machine and on no runner. Deleting the line from the runner's checkout
+        # (never from the committed file) lets Gradle use the JDK set up below. The commit
+        # step below stages one named file, so this edit cannot ride along into a commit.
+        run: sed -i '/^org\.gradle\.java\.home=/d' gradle.properties
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # Build, test and verify BEFORE anything is committed, pushed, tagged or released,
+      # so a red build leaves the repository untouched.
+      - name: Build, test and verify
+        run: ./gradlew --no-daemon buildPlugin test verifyPlugin -PpluginVersion=${VERSION}
+
+      - name: Cross-language hash gate
+        # The Kotlin side of the hash contract is covered by AnchoringTest inside `test`
+        # above. These two run the Python side against the same vectors.json, so a
+        # divergence between the two halves fails the build that would have shipped them.
+        run: |
+          python3 skills/why-notes/writer/why --selftest
+          python3 skills/why-notes/writer/verify_vectors.py
+
+      - name: Generate updatePlugins.xml
+        # The plugin id and since-build are read out of the built artifact rather than
+        # written here, so this file cannot drift from what actually shipped.
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import glob, io, os, zipfile
+          import xml.etree.ElementTree as ET
+
+          version, repo = os.environ["VERSION"], os.environ["REPO"]
+          zip_path, = glob.glob(f"build/distributions/*-{version}.zip")
+          with zipfile.ZipFile(zip_path) as z:
+              for name in z.namelist():
+                  if not name.endswith(".jar"):
+                      continue
+                  with zipfile.ZipFile(io.BytesIO(z.read(name))) as jar:
+                      if "META-INF/plugin.xml" in jar.namelist():
+                          root = ET.fromstring(jar.read("META-INF/plugin.xml"))
+                          break
+              else:
+                  raise SystemExit(f"no jar in {zip_path} carries META-INF/plugin.xml")
+
+          plugin_id = root.findtext("id")
+          since = root.find("idea-version").get("since-build")
+          asset = os.path.basename(zip_path)
+          url = f"https://github.com/{repo}/releases/download/v{version}/{asset}"
+          with open("updatePlugins.xml", "w") as f:
+              f.write(
+                  '<plugins>\n'
+                  f'  <plugin id="{plugin_id}" url="{url}" version="{version}">\n'
+                  f'    <idea-version since-build="{since}"/>\n'
+                  '  </plugin>\n'
+                  '</plugins>\n'
+              )
+          print(open("updatePlugins.xml").read())
+          PY
+
+      - name: Write the same version into the Claude plugin manifest
+        run: |
+          python3 - <<'PY'
+          import json, os
+          path = ".claude-plugin/plugin.json"
+          manifest = json.load(open(path))
+          manifest["version"] = os.environ["VERSION"]
+          with open(path, "w") as f:
+              json.dump(manifest, f, indent=2)
+              f.write("\n")
+          PY
+
+      - name: Commit and tag the version bump
+        # Loop guards, all three cheap:
+        #   1. paths-ignore on the push trigger (top of this file) — the only path this
+        #      commit touches is the one it ignores, so the push starts no run.
+        #   2. [skip ci] in the message — GitHub skips a run whose head commit says so.
+        #   3. GITHUB_TOKEN pushes do not trigger workflow runs at all, by design.
+        # `git add` names exactly one file, so the sed edit to gradle.properties above and
+        # anything else the build left behind cannot ride along. If plugin.json already
+        # holds this version there is nothing to commit and the step is a no-op.
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .claude-plugin/plugin.json
+          git diff --cached --quiet || git commit -m "why-notes ${VERSION} [skip ci]"
+          git tag "v${VERSION}"
+          git push origin "HEAD:${{ github.ref_name }}"
+          git push origin "v${VERSION}"
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: v${{ env.VERSION }}
+          # updatePlugins.xml is attached to every release, so the fixed URL
+          # .../releases/latest/download/updatePlugins.xml always resolves to the newest
+          # one while the zip URL inside it stays pinned to this exact version.
+          files: |
+            build/distributions/*-${{ env.VERSION }}.zip
+            updatePlugins.xml

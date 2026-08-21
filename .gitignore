@@ -1,0 +1,9 @@
+PLAN.md
+TASKS.md
+.gradle/
+build/
+.why/
+.intellijPlatform/
+.kotlin/
+updatePlugins.xml
+__pycache__/

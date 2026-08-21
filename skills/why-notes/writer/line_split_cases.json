@@ -1,0 +1,15 @@
+[
+  {"name": "empty_file", "text": "", "lines": [], "note": "Zero lines, not one empty line."},
+  {"name": "single_newline", "text": "\n", "lines": [""], "note": "One empty line."},
+  {"name": "no_terminator", "text": "a", "lines": ["a"]},
+  {"name": "one_terminator", "text": "a\n", "lines": ["a"], "note": "A trailing terminator does NOT create a phantom final line. This is the rule no hash vector can catch."},
+  {"name": "two_terminators", "text": "a\n\n", "lines": ["a", ""], "note": "Only ONE trailing terminator is removed, so the blank line before it survives as a line."},
+  {"name": "crlf", "text": "a\r\nb\r\n", "lines": ["a", "b"]},
+  {"name": "lone_cr", "text": "a\rb", "lines": ["a", "b"], "note": "A bare CR is a terminator, not content."},
+  {"name": "lone_cr_trailing", "text": "a\rb\r", "lines": ["a", "b"]},
+  {"name": "mixed_terminators", "text": "a\r\nb\rc\n", "lines": ["a", "b", "c"]},
+  {"name": "leading_bom", "text": "﻿a\n", "lines": ["a"], "note": "A leading U+FEFF is stripped before splitting."},
+  {"name": "interior_bom_is_content", "text": "a﻿b\n", "lines": ["a﻿b"], "note": "U+FEFF anywhere but the start is content."},
+  {"name": "blank_lines_preserved_as_lines", "text": "a\n\n\nb\n", "lines": ["a", "", "", "b"], "note": "Splitting keeps blank lines; discarding them is section 7's job, not section 4's."},
+  {"name": "whitespace_only_line_is_a_line", "text": "a\n\t \nb\n", "lines": ["a", "\t ", "b"], "note": "Section 4 does not normalise; the whitespace-only line survives splitting intact."}
+]

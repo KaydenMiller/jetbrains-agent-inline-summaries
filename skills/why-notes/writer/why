@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+"""why -- append-only writer for `.why/tasks/*.jsonl` rationale notes (task W-11).
+
+The only component in the system that writes; the IDE plugin is read-only (requirements section 2).
+Hashing is not implemented here: it is imported from reference_hash.py, the executable copy of
+HASHING.md, so there is one implementation and one place to be wrong.
+
+    why start "<prompt>"
+    why note --file <p> --start <n> --end <n> [--symbol <s>] --what <t> --why <t> [--flag <f> ...]
+    why --selftest
+"""
+
+import argparse
+import contextlib
+import datetime
+import io
+import json
+import os
+import secrets
+import subprocess
+import sys
+
+sys.dont_write_bytecode = True  # a writer that litters __pycache__ into a checkout is a nuisance
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # reference_hash.py sits beside us
+from reference_hash import HashRangeError, hash_text, normalise, split_lines  # noqa: E402
+
+# Crockford base32: uppercase, digit-first, no I/L/O/U, so an id survives being read aloud or
+# retyped out of a chat message. 32**4 = 1048576 values -- see new_note_id for what that costs.
+ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+NO_BASE = "none"  # `base` is required by section 5.3; this is what we record when git cannot answer
+
+
+class Fail(Exception):
+    """A clear error for the caller. Raised before anything is opened for writing."""
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def find_root(start=None):
+    """Nearest ancestor holding `.why/`, else nearest holding `.git`, else the start directory.
+
+    Mirrors the plugin's R8.1 lookup so both sides agree on the project root, and tolerates `.git`
+    being a file (R8.2) because it only tests for existence.
+    """
+    start = os.path.abspath(start or os.getcwd())
+    for marker in (".why", ".git"):
+        path = start
+        while True:
+            if os.path.exists(os.path.join(path, marker)):
+                return path
+            parent = os.path.dirname(path)
+            if parent == path:
+                break
+            path = parent
+    return start
+
+
+def git_base(root):
+    """Short HEAD SHA, or NO_BASE when there is no commit / no repository / no git."""
+    try:
+        done = subprocess.run(["git", "-C", root, "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True)
+    except OSError:
+        return NO_BASE
+    return done.stdout.strip() if done.returncode == 0 and done.stdout.strip() else NO_BASE
+
+
+def ensure_why(root):
+    """Create `.why/tasks/` and add the R5.1.2 gitignore entry. The only write outside `.why/`."""
+    tasks = os.path.join(root, ".why", "tasks")
+    first_use = not os.path.isdir(tasks)
+    os.makedirs(tasks, exist_ok=True)
+    ignore = os.path.join(root, ".gitignore")
+    if not os.path.exists(ignore) and not os.path.exists(os.path.join(root, ".git")):
+        # Not a git checkout: an entry would exclude nothing, and creating a file at the root of
+        # someone else's project is a surprise. Say it once, on first use, instead.
+        if first_use:
+            print("why: no .gitignore and no .git in %s; add '.why/' yourself if this becomes a repo"
+                  % root, file=sys.stderr)
+        return tasks
+    lines = []
+    if os.path.exists(ignore):
+        with open(ignore, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    if any(line.strip() in (".why", ".why/") for line in lines):
+        return tasks
+    with open(ignore, "a", encoding="utf-8") as fh:
+        fh.write(("" if not lines else "\n") + ".why/\n")
+    return tasks
+
+
+def read_records(path):
+    """Every parseable line of a task file. A truncated final line is skipped, as in section 5.2."""
+    out = []
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(rec, dict):
+                out.append(rec)
+    return out
+
+
+def existing_ids(tasks):
+    """Every `id` already in the corpus, so a collision is detected rather than merely improbable."""
+    # ponytail: rescans the whole corpus per note -- O(total records). At a few thousand notes this
+    # is milliseconds; build an id index only if a project ever reaches ~10^5 notes.
+    ids = set()
+    if not os.path.isdir(tasks):
+        return ids
+    for name in os.listdir(tasks):
+        if name.endswith(".jsonl"):
+            for rec in read_records(os.path.join(tasks, name)):
+                if isinstance(rec.get("id"), str):
+                    ids.add(rec["id"])
+    return ids
+
+
+def new_note_id(taken, choice=secrets.choice):
+    """`W-` + 4 Crockford base32 characters, regenerated on collision.
+
+    Birthday bound on 32**4: a 50% chance of one collision arrives around 1200 ids, so the corpus
+    scan is load-bearing at realistic project sizes, not defensive decoration.
+    """
+    for _ in range(1000):
+        candidate = "W-" + "".join(choice(ALPHABET) for _ in range(4))
+        if candidate not in taken:
+            return candidate
+    raise Fail("could not find an unused note id in 1000 attempts; the id space is exhausted")
+
+
+def append(path, record):
+    """One complete JSON object, one line, append mode. Nothing else ever touches an existing line."""
+    line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+    with open(path, "a+b") as fh:  # in append mode every write lands at the end, whatever we seek
+        fh.seek(0, os.SEEK_END)
+        if fh.tell():
+            fh.seek(-1, os.SEEK_END)
+            if fh.read(1) != b"\n":
+                # A previous run died mid-line. Terminating it appends one byte and rewrites nothing;
+                # without this the interrupted line swallows this record too and both are lost.
+                fh.write(b"\n")
+        fh.write(line.encode("utf-8"))
+
+
+def cmd_start(args):
+    root = find_root()
+    tasks = ensure_why(root)
+    used = {n for n in (name[2:-6] for name in os.listdir(tasks)
+                        if name.startswith("T-") and name.endswith(".jsonl")) if n.isdigit()}
+    n = max((int(x) for x in used), default=0) + 1
+    while True:
+        task_id = "T-%d" % n
+        path = os.path.join(tasks, task_id + ".jsonl")
+        try:
+            # O_EXCL is the whole concurrency story: two agents that both computed the same n cannot
+            # both win, and the loser bumps n instead of appending into the other agent's task.
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+            break
+        except FileExistsError:
+            n += 1
+    append(path, {"kind": "task", "id": task_id, "ts": now(),
+                  "base": git_base(root), "prompt": args.prompt})
+    print(task_id)
+    return 0
+
+
+def resolve_task(tasks, requested):
+    """Which task a note attaches to: --task, else the only task there is, else refuse to guess."""
+    names = sorted(name for name in os.listdir(tasks) if name.endswith(".jsonl")) \
+        if os.path.isdir(tasks) else []
+    if requested:
+        task_id = requested if requested.startswith("T-") else "T-" + requested
+        path = os.path.join(tasks, task_id + ".jsonl")
+        if not os.path.exists(path):
+            raise Fail("no such task %s in %s (run `why start` first)" % (task_id, tasks))
+        return task_id, path
+    if not names:
+        raise Fail("no tasks in %s; run `why start \"<prompt>\"` first" % tasks)
+    if len(names) > 1:
+        raise Fail("%d tasks exist (%s); pass --task T-<n> -- refusing to guess"
+                   % (len(names), ", ".join(n[:-6] for n in names)))
+    return names[0][:-6], os.path.join(tasks, names[0])
+
+
+def cmd_note(args):
+    root = find_root()
+    tasks = ensure_why(root)
+    task_id, task_path = resolve_task(tasks, args.task)
+
+    target = os.path.realpath(args.file)
+    rel = os.path.relpath(target, os.path.realpath(root))
+    if rel.startswith(os.pardir) or os.path.isabs(rel):
+        raise Fail("--file %s is outside the project root %s" % (args.file, root))
+    if not os.path.isfile(target):
+        raise Fail("--file %s does not exist" % args.file)
+    try:
+        text = open(target, "rb").read().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise Fail("--file %s is not valid UTF-8: %s" % (args.file, exc))
+
+    lines = split_lines(text)
+    if args.start > len(lines) or args.end > len(lines):
+        raise Fail("range [%d,%d] is outside %s, which has %d lines"
+                   % (args.start, args.end, rel, len(lines)))
+    try:
+        content = normalise(lines, args.start, args.end)
+        digest = hash_text(text, args.start, args.end)
+    except HashRangeError as exc:
+        raise Fail(str(exc))
+    if content == "":
+        # HASHING.md section 13 rule 1. Tested as "no content survived normalisation", not as a
+        # comparison with e3b0c4, so it stays correct if the digest ever changes.
+        raise Fail("range [%d,%d] of %s normalises to nothing, so the note would match every blank "
+                   "window in every file; anchor it to a line with content"
+                   % (args.start, args.end, rel))
+    if not any(c.isalnum() for c in content):
+        # HASHING.md section 13 rule 3. A lone `}` normalises to `}`, which is non-empty, so
+        # rule 1 does not fire -- but every `}` in the project hashes identically, so the
+        # resolver re-anchors the note Solid at the first brace it sweeps past. A confidently
+        # wrong location is worse than an orphan.
+        raise Fail("range [%d,%d] of %s normalises to %r, which has no identifier in it and so "
+                   "matches every such line in the project; widen the range to include the code "
+                   "it belongs to" % (args.start, args.end, rel, content))
+
+    anchor = {"start": args.start, "end": args.end, "hash": digest}
+    if args.symbol:
+        anchor = {"symbol": args.symbol, **anchor}
+    note_id = new_note_id(existing_ids(tasks))
+    record = {"kind": "note", "id": note_id, "ts": now(),
+              "file": rel.replace(os.sep, "/"), "base": git_base(root), "anchor": anchor,
+              "what": args.what, "why": args.why}
+    if args.flag:
+        record["flags"] = args.flag
+    append(task_path, record)  # first and only write; every failure above appended nothing
+    print("%s %s" % (note_id, task_id))
+    return 0
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog="why", description=__doc__.splitlines()[0])
+    parser.add_argument("--selftest", action="store_true", help="run the self-check and exit")
+    sub = parser.add_subparsers(dest="cmd")
+
+    start = sub.add_parser("start", help="create a task file and print its id")
+    start.add_argument("prompt")
+    start.set_defaults(func=cmd_start)
+
+    note = sub.add_parser("note", help="append one note record")
+    note.add_argument("--task", help="task id, e.g. T-3; required once more than one task exists")
+    note.add_argument("--file", required=True)
+    note.add_argument("--start", required=True, type=int)
+    note.add_argument("--end", required=True, type=int)
+    note.add_argument("--symbol")
+    note.add_argument("--what", required=True)
+    note.add_argument("--why", required=True)
+    note.add_argument("--flag", action="append", default=[])
+    note.set_defaults(func=cmd_note)
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    if args.selftest:
+        return selftest()
+    if not getattr(args, "func", None):
+        build_parser().print_help()
+        return 2
+    try:
+        return args.func(args)
+    except Fail as exc:
+        print("why: %s" % exc, file=sys.stderr)
+        return 1
+
+
+# ---------------------------------------------------------------------------- self-check
+
+def selftest():
+    import tempfile
+
+    here = os.path.dirname(os.path.abspath(__file__))
+
+    # 1. the 32 golden vectors, through the shared hasher this tool actually calls.
+    sys.path.insert(0, here)
+    import verify_vectors
+    with open(os.path.join(here, "vectors.json"), encoding="utf-8") as fh:
+        vectors = json.load(fh)
+    bad = [v["name"] for v in vectors if verify_vectors.check(v)]
+    assert not bad, "vector mismatch: %s" % bad
+    assert len(vectors) == 32, "expected 32 vectors, found %d" % len(vectors)
+    print("ok  %d vectors via the shared hasher" % len(vectors))
+
+    # 2. collision regeneration, forced deterministically through the injected chooser.
+    picks = iter("AAAA" "BBBB")
+    got = new_note_id({"W-AAAA"}, choice=lambda _: next(picks))
+    assert got == "W-BBBB", got
+    print("ok  collision regenerated: W-AAAA taken -> %s" % got)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        os.chdir(tmp)
+        open(os.path.join(tmp, ".gitignore"), "w").close()
+        tasks = ensure_why(tmp)
+        src = os.path.join(tmp, "A.cs")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write("class A\n{\n\tint n = 0;\n\n}\n")
+        assert run(["start", "seeded corpus"]) == 0
+
+        # a corpus large enough that the scan is doing real work, then prove the next id avoids it
+        seeded = {"W-" + "".join(ALPHABET[(i >> s) % 32] for s in (15, 10, 5, 0))
+                  for i in range(2000)}
+        with open(os.path.join(tasks, "T-1.jsonl"), "a", encoding="utf-8") as fh:
+            for i in sorted(seeded):
+                fh.write(json.dumps({"kind": "note", "id": i}) + "\n")
+        found = existing_ids(tasks)
+        assert seeded <= found, "corpus scan missed %d ids" % len(seeded - found)
+        assert new_note_id(found) not in found
+        print("ok  corpus scan saw %d seeded ids and avoided them" % len(seeded))
+
+        with open(os.path.join(tasks, "T-1.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write('{"kind":"note","id":"W-TRUN')  # truncated line must not break the scan
+        assert seeded <= existing_ids(tasks)
+        print("ok  truncated final line skipped by the id scan")
+
+        # 3. and 4. every rejection path, each asserted to append nothing.
+        before = os.path.getsize(os.path.join(tasks, "T-1.jsonl"))
+        base = ["note", "--task", "T-1", "--file", src, "--what", "w", "--why", "y"]
+        with open(os.path.join(tmp, "bad.bin"), "wb") as fh:
+            fh.write(b"\xff\xfe\x00")
+        cases = {
+            "empty content (section 13 rule 1)": base + ["--start", "4", "--end", "4"],
+            "end past end of file": base + ["--start", "1", "--end", "9"],
+            "start past end of file": base + ["--start", "8", "--end", "9"],
+            "start below one": base + ["--start", "0", "--end", "2"],
+            "start greater than end": base + ["--start", "3", "--end", "2"],
+            "missing file": base[:4] + [os.path.join(tmp, "gone.cs")] + base[5:] + ["--start", "1", "--end", "1"],
+            "file outside the project": base[:4] + ["/etc/hosts"] + base[5:] + ["--start", "1", "--end", "1"],
+            "non-UTF-8 file": base[:4] + [os.path.join(tmp, "bad.bin")] + base[5:] + ["--start", "1", "--end", "1"],
+            "unknown task": ["note", "--task", "T-99"] + base[3:] + ["--start", "3", "--end", "3"],
+            "no --file": ["note", "--task", "T-1", "--what", "w", "--why", "y", "--start", "1", "--end", "1"],
+        }
+        for label, argv in cases.items():
+            code = run(argv)
+            assert code != 0, "%s should have failed" % label
+            size = os.path.getsize(os.path.join(tasks, "T-1.jsonl"))
+            assert size == before, "%s appended %d bytes" % (label, size - before)
+            print("ok  refused, appended nothing: %s" % label)
+
+        # the happy path still works after all that, and the file only grew.
+        assert run(base + ["--start", "3", "--end", "3", "--symbol", "A.n", "--flag", "f"]) == 0
+        after = os.path.getsize(os.path.join(tasks, "T-1.jsonl"))
+        assert after > before, (before, after)
+        last = read_records(os.path.join(tasks, "T-1.jsonl"))[-1]
+        assert last["anchor"] == {"symbol": "A.n", "start": 3, "end": 3,
+                                 "hash": hash_text("class A\n{\n\tint n = 0;\n\n}\n", 3, 3)}, last
+        assert last["file"] == "A.cs" and last["flags"] == ["f"] and last["base"] == NO_BASE
+        print("ok  note appended (%d -> %d bytes), base=%s with no git" % (before, after, NO_BASE))
+        raw = open(os.path.join(tasks, "T-1.jsonl"), encoding="utf-8").read().splitlines()
+        assert raw[-2] == '{"kind":"note","id":"W-TRUN', raw[-2]
+        print("ok  interrupted line left intact and skipped; the new record still parses")
+
+    print("\nwhy --selftest OK")
+    return 0
+
+
+def run(argv):
+    """Invoke main() with its diagnostics captured -- selftest only."""
+    with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        try:
+            return main(argv)
+        except SystemExit as exc:  # argparse rejections
+            return exc.code or 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "why-notes",
+  "description": "The writer half of the .why toolchain: records the rationale for a code change as a note anchored to the lines it explains.",
+  "owner": {
+    "name": "Kayden Miller",
+    "url": "https://github.com/KaydenMiller"
+  },
+  "plugins": [
+    {
+      "name": "why-notes",
+      "description": "Records the rationale for a code change as an append-only .why note anchored to the lines it explains. The companion Rider/IntelliJ plugin displays them in the gutter.",
+      "source": "./",
+      "category": "development"
+    }
+  ]
+}

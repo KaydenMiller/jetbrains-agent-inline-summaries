@@ -1,0 +1,436 @@
+[
+  {
+    "name": "single_line",
+    "input_lines": [
+      "var total = ComputeTotal(items);"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 1,
+    "expected_hash": "2adc7b",
+    "note": "One-line range: the minimal anchor the writer can emit."
+  },
+  {
+    "name": "multi_line_ordinary",
+    "input_lines": [
+      "public int Total(int[] xs)",
+      "{",
+      "\tint sum = 0;",
+      "\treturn sum;",
+      "}"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 5,
+    "expected_hash": "a67bfc",
+    "note": "Ordinary multi-line range; the baseline every equivalence case below compares against."
+  },
+  {
+    "name": "subrange_middle",
+    "input_lines": [
+      "class Meter",
+      "{",
+      "\tint sum = 0;",
+      "\treturn sum;",
+      "}",
+      "// end"
+    ],
+    "line_ending": "\n",
+    "start": 3,
+    "end": 4,
+    "expected_hash": "aa2b34",
+    "note": "A range covering only interior lines, proving lines outside [start, end] never enter the hash."
+  },
+  {
+    "name": "body_no_blanks",
+    "input_lines": [
+      "\tint sum = 0;",
+      "\treturn sum;"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 2,
+    "expected_hash": "aa2b34",
+    "note": "Two-line body used as the counterpart for the blank-line and whitespace equivalences."
+  },
+  {
+    "name": "blank_lines_leading",
+    "input_lines": [
+      "",
+      "",
+      "\tint sum = 0;",
+      "\treturn sum;"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 4,
+    "expected_hash": "aa2b34",
+    "same_as": "body_no_blanks",
+    "note": "Blank lines at the start of the range are discarded, not hashed as empty entries."
+  },
+  {
+    "name": "blank_lines_trailing",
+    "input_lines": [
+      "\tint sum = 0;",
+      "\treturn sum;",
+      "",
+      ""
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 4,
+    "expected_hash": "aa2b34",
+    "same_as": "body_no_blanks",
+    "note": "Blank lines at the end of the range are discarded."
+  },
+  {
+    "name": "blank_lines_middle",
+    "input_lines": [
+      "\tint sum = 0;",
+      "",
+      "\treturn sum;"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 3,
+    "expected_hash": "aa2b34",
+    "same_as": "body_no_blanks",
+    "note": "A blank line inside the range is discarded, so inserting one does not drift a note."
+  },
+  {
+    "name": "middle_whitespace_only_line",
+    "input_lines": [
+      "\tint sum = 0;",
+      "   \t ",
+      "\treturn sum;"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 3,
+    "expected_hash": "aa2b34",
+    "same_as": "body_no_blanks",
+    "note": "A line of only spaces and tabs normalises to empty and is discarded like a truly blank line."
+  },
+  {
+    "name": "tabs_indent",
+    "input_lines": [
+      "\tif (ready)",
+      "\t\tFlush();"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 2,
+    "expected_hash": "59de86",
+    "note": "Tab-indented code; the counterpart for the re-indentation equivalence."
+  },
+  {
+    "name": "spaces_indent_same_hash",
+    "input_lines": [
+      "    if (ready)",
+      "        Flush();"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 2,
+    "expected_hash": "59de86",
+    "same_as": "tabs_indent",
+    "note": "Same code re-indented with spaces must hash identically: re-indentation never drifts a note."
+  },
+  {
+    "name": "renamed_identifier_differs",
+    "input_lines": [
+      "\tif (armed)",
+      "\t\tFlush();"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 2,
+    "expected_hash": "22fa9e",
+    "differs_from": "tabs_indent",
+    "note": "Renaming an identifier changes the hash, so a note over renamed code drifts."
+  },
+  {
+    "name": "statement_one_line",
+    "input_lines": [
+      "\tvar client = new HttpClient(handler, disposeHandler: false);"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 1,
+    "expected_hash": "e82f4c",
+    "note": "Single-line statement; the counterpart for the reflow case."
+  },
+  {
+    "name": "statement_reflowed_differs",
+    "input_lines": [
+      "\tvar client = new HttpClient(",
+      "\t\thandler, disposeHandler: false);"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 2,
+    "expected_hash": "28e4ec",
+    "differs_from": "statement_one_line",
+    "note": "Reflowing one statement across two lines changes the hash, because lines are joined with \\n not a space."
+  },
+  {
+    "name": "collapse_internal_run",
+    "input_lines": [
+      "sum  +=\t\tx;"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 1,
+    "expected_hash": "2f25b4",
+    "note": "Internal runs of spaces and tabs collapse to exactly one space."
+  },
+  {
+    "name": "single_space_internal",
+    "input_lines": [
+      "sum += x;"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 1,
+    "expected_hash": "2f25b4",
+    "same_as": "collapse_internal_run",
+    "note": "Already-single-spaced counterpart proving the collapse target is one U+0020."
+  },
+  {
+    "name": "form_feed_is_whitespace",
+    "input_lines": [
+      "sum\f+= x;"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 1,
+    "expected_hash": "2f25b4",
+    "same_as": "single_space_internal",
+    "note": "U+000C FORM FEED is in the whitespace set, so it collapses to a space."
+  },
+  {
+    "name": "nbsp_is_content_differs",
+    "input_lines": [
+      "sum +=\u00a0x;"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 1,
+    "expected_hash": "2a7d1d",
+    "differs_from": "single_space_internal",
+    "note": "U+00A0 NO-BREAK SPACE is content, not whitespace: it must not collapse. Pins the set against isWhitespace()."
+  },
+  {
+    "name": "crlf_multi_line_same_hash",
+    "input_lines": [
+      "public int Total(int[] xs)",
+      "{",
+      "\tint sum = 0;",
+      "\treturn sum;",
+      "}"
+    ],
+    "line_ending": "\r\n",
+    "start": 1,
+    "end": 5,
+    "expected_hash": "a67bfc",
+    "same_as": "multi_line_ordinary",
+    "note": "CRLF line endings hash identically to LF: terminators are normalised before splitting."
+  },
+  {
+    "name": "lone_cr_multi_line_same_hash",
+    "input_lines": [
+      "public int Total(int[] xs)",
+      "{",
+      "\tint sum = 0;",
+      "\treturn sum;",
+      "}"
+    ],
+    "line_ending": "\r",
+    "start": 1,
+    "end": 5,
+    "expected_hash": "a67bfc",
+    "same_as": "multi_line_ordinary",
+    "note": "Lone CR (classic Mac) endings hash identically to LF: a bare \\r is a terminator, not content."
+  },
+  {
+    "name": "lone_cr_non_ascii_same_hash",
+    "input_lines": [
+      "\tvar msg = \"caf\u00e9 \u2014 \u65e5\u672c\u8a9e\";"
+    ],
+    "line_ending": "\r",
+    "start": 1,
+    "end": 1,
+    "expected_hash": "ac9e12",
+    "same_as": "non_ascii_string_literal",
+    "note": "Lone CR with multi-byte characters: terminator normalisation does not disturb UTF-8 sequences."
+  },
+  {
+    "name": "no_trailing_newline_same_hash",
+    "input_lines": [
+      "public int Total(int[] xs)",
+      "{",
+      "\tint sum = 0;",
+      "\treturn sum;",
+      "}"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 5,
+    "trailing_newline": false,
+    "expected_hash": "a67bfc",
+    "same_as": "multi_line_ordinary",
+    "note": "A file with no terminator on its last line hashes the same as one that has it."
+  },
+  {
+    "name": "end_past_eof_clamped",
+    "input_lines": [
+      "public int Total(int[] xs)",
+      "{",
+      "\tint sum = 0;",
+      "\treturn sum;",
+      "}"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 99,
+    "expected_hash": "a67bfc",
+    "same_as": "multi_line_ordinary",
+    "note": "end past end of file clamps to the last line; no error, and no trailing empty line is invented."
+  },
+  {
+    "name": "end_one_past_eof_is_not_a_blank_line",
+    "input_lines": [
+      "public int Total(int[] xs)",
+      "{",
+      "\tint sum = 0;",
+      "\treturn sum;",
+      "}"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 6,
+    "expected_hash": "a67bfc",
+    "same_as": "multi_line_ordinary",
+    "note": "The trailing newline does not create line 6, so end=6 on a 5-line file equals end=5."
+  },
+  {
+    "name": "only_blank_lines",
+    "input_lines": [
+      "",
+      "",
+      ""
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 3,
+    "expected_hash": "e3b0c4",
+    "note": "A range of only blank lines normalises to the empty string; hash is SHA-256 of zero bytes."
+  },
+  {
+    "name": "only_whitespace_lines",
+    "input_lines": [
+      "  ",
+      "\t",
+      "\f"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 3,
+    "expected_hash": "e3b0c4",
+    "same_as": "only_blank_lines",
+    "note": "Spaces-only, tab-only and form-feed-only lines all normalise to empty."
+  },
+  {
+    "name": "single_empty_line_range",
+    "input_lines": [
+      ""
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 1,
+    "expected_hash": "e3b0c4",
+    "same_as": "only_blank_lines",
+    "note": "The empty-normalised-content case in its smallest form."
+  },
+  {
+    "name": "start_past_eof_empty",
+    "input_lines": [
+      "public int Total(int[] xs)",
+      "{",
+      "\tint sum = 0;",
+      "\treturn sum;",
+      "}"
+    ],
+    "line_ending": "\n",
+    "start": 12,
+    "end": 14,
+    "expected_hash": "e3b0c4",
+    "same_as": "only_blank_lines",
+    "note": "start past end of file selects no lines and yields the empty-content hash rather than erroring."
+  },
+  {
+    "name": "empty_file",
+    "input_lines": [],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 1,
+    "expected_hash": "e3b0c4",
+    "same_as": "only_blank_lines",
+    "note": "A zero-line file has no lines at all, so any range over it is empty."
+  },
+  {
+    "name": "non_ascii_string_literal",
+    "input_lines": [
+      "\tvar msg = \"caf\u00e9 \u2014 \u65e5\u672c\u8a9e\";"
+    ],
+    "line_ending": "\n",
+    "start": 1,
+    "end": 1,
+    "expected_hash": "ac9e12",
+    "note": "Non-ASCII content is hashed as its UTF-8 bytes with no Unicode normalisation."
+  },
+  {
+    "name": "non_ascii_crlf_same_hash",
+    "input_lines": [
+      "\tvar msg = \"caf\u00e9 \u2014 \u65e5\u672c\u8a9e\";"
+    ],
+    "line_ending": "\r\n",
+    "start": 1,
+    "end": 1,
+    "expected_hash": "ac9e12",
+    "same_as": "non_ascii_string_literal",
+    "note": "Non-ASCII plus CRLF: multi-byte characters do not interact with terminator normalisation."
+  },
+  {
+    "name": "error_start_greater_than_end",
+    "input_lines": [
+      "public int Total(int[] xs)",
+      "{",
+      "\tint sum = 0;",
+      "\treturn sum;",
+      "}"
+    ],
+    "line_ending": "\n",
+    "start": 3,
+    "end": 2,
+    "expected_hash": null,
+    "expected_error": "INVALID_RANGE",
+    "note": "start > end is a caller bug the resolver never produces, so it is rejected loudly."
+  },
+  {
+    "name": "error_start_below_one",
+    "input_lines": [
+      "public int Total(int[] xs)",
+      "{",
+      "\tint sum = 0;",
+      "\treturn sum;",
+      "}"
+    ],
+    "line_ending": "\n",
+    "start": 0,
+    "end": 2,
+    "expected_hash": null,
+    "expected_error": "START_BELOW_ONE",
+    "note": "Lines are 1-based; start < 1 is rejected rather than clamped."
+  }
+]

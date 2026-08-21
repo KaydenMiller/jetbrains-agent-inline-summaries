@@ -1,0 +1,5 @@
+<svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Light theme. Stroke is the JetBrains "Grey #7" gutter/icon grey (#6C707E). -->
+  <path d="M1.5 2.5a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H5l-2.5 2V8.5a1 1 0 0 1-1-1z" stroke="#6C707E" stroke-linejoin="round"/>
+  <path d="M3.5 4.5h5M3.5 6.5h3" stroke="#6C707E" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,91 @@
+<idea-plugin>
+    <id>com.kaydenmiller.agent-inline-summaries</id>
+    <name>Why</name>
+    <vendor url="https://github.com/KaydenMiller">Kayden Miller</vendor>
+
+    <description><![CDATA[
+        Surfaces the rationale an agent recorded for a change next to the code it changed.
+        Reads append-only <code>.why/tasks/*.jsonl</code> files written by the <code>why</code>
+        command line tool and anchors each note to its region of source. Read only: the plugin
+        never writes to <code>.why/</code>.
+    ]]></description>
+
+    <idea-version since-build="261"/>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!--
+          W-5c. At project open: give `.why/tasks` a virtual-file-system record and a
+          watch root of its own (without one, the listener below is handed no events
+          for it), then fold the corpus once so a project opened on existing notes
+          has a model before anything changes.
+        -->
+        <postStartupActivity implementation="why.store.WhyProjectOpenActivity"/>
+
+        <!--
+          W-10. R7.4's tool window: every note in the corpus, grouped by task.
+
+          anchor="right" rather than "bottom": the content is a tall narrow tree of
+          note rows, and the right stripe is where the platform's own tree views
+          (Structure, Bookmarks) live, so it does not fight the run and terminal
+          windows for horizontal space.
+
+          No icon attribute. The gutter icon is 12x12 and a tool window stripe icon
+          is 13x13, so reusing /icons/whyNote.svg would be the wrong size; the stripe
+          falls back to the id text, which is legible and costs no artwork. The
+          factory is DumbAware, so the window is usable while indexing.
+        -->
+        <toolWindow id="Why"
+                    anchor="right"
+                    factoryClass="why.ui.WhyToolWindowFactory"/>
+    </extensions>
+
+    <!--
+      W-8. R7.3 Copy Reference. The gutter mark's right-click menu builds this action
+      itself with the note it draws (WhyNoteGutterIconRenderer.getPopupMenuActions), so the
+      only thing needed here is the keyboard entry point, which the platform instantiates
+      through the no-argument constructor and which resolves a note from the caret.
+
+      Ctrl+Alt+Shift+O, and specifically not Ctrl+Alt+Shift+C: that is the platform's own
+      Copy Reference (keymaps/$default.xml in intellij.platform.ide.impl.jar, in both IDEA
+      261 and Rider 261.23567.144). Ctrl+Alt+Shift+O is unclaimed by any first- or
+      second-keystroke declared in any XML shipped in Rider 261.23567.144 — its keymap files
+      ($default, macOS, ReSharper, Visual Studio, VSCode, Emacs, Sublime) and every bundled
+      plugin.xml — and by any of IDEA 261's ten keymaps. See the W-8 report for the scan.
+
+      No add-to-group: the action reaches a menu through the gutter mark, and Find Action
+      plus Settings | Keymap ("Copy Why Note Reference") cover the rest, so there is no
+      main-menu or editor-popup entry to keep in sync.
+    -->
+    <actions>
+        <action id="why.CopyNoteReference"
+                class="why.editor.WhyCopyReferenceAction"
+                text="Copy Why Note Reference"
+                description="Copies the identifier of the why note at the caret to the clipboard">
+            <keyboard-shortcut keymap="$default" first-keystroke="control alt shift O"/>
+        </action>
+    </actions>
+
+    <!--
+      W-5. BulkFileListener on VirtualFileManager.VFS_CHANGES. Declared per project
+      rather than per application so the listener is handed the Project it belongs to
+      and is torn down with it. WhyModelService needs no element here: @Service makes
+      it a light service, instantiated on the first project.service<WhyModelService>()
+      call. Both classes come from com.intellij.modules.platform only.
+    -->
+    <projectListeners>
+        <!--
+          W-7. Editor lifecycle hook for the gutter icons: fileOpened attaches the
+          highlighters for a file, fileClosed detaches them once the last editor on that
+          file is gone. Project-scoped rather than an application-level
+          EditorFactoryListener because everything downstream is per project, and because
+          editorCreated also fires for consoles, diff panes and commit-message fields.
+          WhyGutterService needs no element: @Service makes it a light service.
+        -->
+        <listener class="why.editor.WhyEditorGutterListener"
+                  topic="com.intellij.openapi.fileEditor.FileEditorManagerListener"/>
+        <listener class="why.store.WhyTasksVfsListener"
+                  topic="com.intellij.openapi.vfs.newvfs.BulkFileListener"/>
+    </projectListeners>
+</idea-plugin>

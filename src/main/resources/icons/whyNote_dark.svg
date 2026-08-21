@@ -1,0 +1,6 @@
+<svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Dark theme, picked up by IconLoader from the _dark suffix. Stroke is the
+       JetBrains dark-theme icon grey (#CED0D6). Geometry is identical to whyNote.svg. -->
+  <path d="M1.5 2.5a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H5l-2.5 2V8.5a1 1 0 0 1-1-1z" stroke="#CED0D6" stroke-linejoin="round"/>
+  <path d="M3.5 4.5h5M3.5 6.5h3" stroke="#CED0D6" stroke-linecap="round"/>
+</svg>
