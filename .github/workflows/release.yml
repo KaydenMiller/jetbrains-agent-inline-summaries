@@ -31,11 +31,13 @@ jobs:
         # the git tag and the release.
         run: echo "VERSION=0.1.${{ github.run_number }}" >> "$GITHUB_ENV"
 
-      - name: Neutralise the developer-local Gradle Java home
-        # gradle.properties pins org.gradle.java.home to a Homebrew path that exists on
-        # Kayden's machine and on no runner. Deleting the line from the runner's checkout
-        # (never from the committed file) lets Gradle use the JDK set up below. The commit
-        # step below stages one named file, so this edit cannot ride along into a commit.
+      - name: Guard against a developer-local Gradle Java home
+        # org.gradle.java.home is deliberately NOT in the committed gradle.properties — it
+        # lives in each developer's ~/.gradle/gradle.properties so this repo stays clonable.
+        # This step is a guard, not a fix: if the line is ever reintroduced it would point at
+        # a path no runner has and fail the build, so it is stripped from the runner's
+        # checkout. A no-op today. The commit step stages one named file, so this edit
+        # cannot ride along into a commit.
         run: sed -i '/^org\.gradle\.java\.home=/d' gradle.properties
 
       - uses: actions/setup-java@v4
