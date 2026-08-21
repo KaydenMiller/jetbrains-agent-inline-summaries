@@ -1,6 +1,6 @@
 {
   "name": "why-notes",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "description": "Records the rationale for a code change as an append-only .why note anchored to the lines it explains. Ships the `why` command-line writer alongside the instructions, so nothing is committed to the developer's project.",
   "author": {
     "name": "Kayden Miller",
