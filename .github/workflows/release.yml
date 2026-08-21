@@ -1,6 +1,13 @@
 name: release
 
-# Every push to the default branch cuts a release of both halves at one version.
+# Releases only. Every push to master — which in practice means every merge into master —
+# cuts a release of both halves at one version. Work on any other branch is validated by
+# ci.yml, which runs the same checks and publishes nothing.
+#
+# **`.claude-plugin/plugin.json`'s version field is owned by this workflow and by nobody
+# else.** Never edit it by hand on a development branch. It is the one file this job pushes
+# back to master, so if a branch also changed it every merge would conflict on it; leaving
+# it alone means a dev branch and master can never disagree about it.
 #
 # paths-ignore is the first of three loop guards: the only file this workflow pushes back
 # is .claude-plugin/plugin.json, and a push whose every changed path is ignored starts no

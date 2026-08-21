@@ -1,0 +1,66 @@
+name: ci
+
+# Validation without release. Everything the release workflow checks, and nothing it
+# changes: no version bump, no commit, no tag, no release. So development on a branch
+# gets the same build, test and compatibility feedback as a release would, and finding
+# out something is broken does not require merging it into master first.
+#
+# The split exists because `release.yml` triggers only on master. Before this file, a
+# dev branch had no CI at all.
+on:
+  push:
+    branches-ignore:
+      - master # master is release.yml's job; running both would double every push
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+# Read-only on purpose. This workflow must not be able to push a commit, move a tag or
+# publish a release even if someone later copies a step into it from release.yml.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard against a developer-local Gradle Java home
+        # Same guard as release.yml. org.gradle.java.home belongs in each developer's
+        # ~/.gradle/gradle.properties, never in the committed file; if it is reintroduced
+        # it points at a path no runner has. A no-op today.
+        run: sed -i '/^org\.gradle\.java\.home=/d' gradle.properties
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # A fixed version, unlike release.yml's run-number scheme. Nothing here is
+      # published, so the value only has to be valid, and a constant keeps the Gradle
+      # cache warm across runs.
+      - name: Build, test and verify
+        run: ./gradlew --no-daemon buildPlugin test verifyPlugin -PpluginVersion=0.0.0-ci
+
+      - name: Cross-language hash gate
+        # The two implementations of the hash contract in skills/why-notes/writer/HASHING.md
+        # must agree. The Kotlin half is covered by AnchoringTest inside `test`; these run
+        # the Python half against the same vectors. A divergence here is the failure that
+        # would otherwise render every note drifted with no error.
+        run: |
+          python3 skills/why-notes/writer/why --selftest
+          python3 skills/why-notes/writer/verify_vectors.py
+
+      - name: Fixture resolution states still hold
+        # fixture/RUNBOOK.md tells a human which state to expect for each of the nine
+        # fixture notes. If a product change alters resolution, the runbook silently starts
+        # asking people to confirm the wrong thing, and a reader would log a bug against
+        # working code. Kept as a plain grep rather than a test so the fixture stays a
+        # fixture: it only checks the note ids and files the runbook names still exist.
+        run: |
+          test -f fixture/RUNBOOK.md || { echo "runbook missing"; exit 1; }
+          for id in W-EA82 W-NE44 W-A05D W-EK86 W-KXWT W-SEB3 W-QRBA W-RCY8 W-KT87; do
+            grep -q "$id" fixture/WhyFixtureProject/.why/tasks/*.jsonl \
+              || { echo "fixture no longer contains $id, which RUNBOOK.md references"; exit 1; }
+          done
