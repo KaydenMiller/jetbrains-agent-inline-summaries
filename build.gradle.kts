@@ -62,15 +62,31 @@ intellijPlatform {
 
     pluginVerification {
         ides {
-            // Verify against the real target IDE. On a machine with Rider installed that
-            // is the local install, so nothing is downloaded. A continuous-integration
-            // runner has no Rider.app, so fall back to fetching the same Rider build the
-            // local install reports (`riderBuild`) rather than failing on a missing path.
+            // Verify against the real target IDE where one exists: on a machine with Rider
+            // installed this is the local install, nothing is downloaded, and the verdict is
+            // against the exact build the plugin is meant for.
+            //
+            // A continuous-integration runner has no Rider.app. The first CI run tried
+            // `create(Rider, <local build number>)` and failed with
+            //   Could not find com.jetbrains.intellij.rider:riderRD:261.23567.144
+            // because `261.23567.144` is an *installer* build number, not a published Maven
+            // coordinate. Rather than guess a second version string, the fallback verifies
+            // against the platform this project already builds and tests against, which is
+            // guaranteed to resolve because the build has just downloaded it.
+            //
+            // The fallback is a weaker check than the local one: it confirms the plugin is
+            // compatible with the IntelliJ platform of that build, not with Rider
+            // specifically. That is sound here only because the plugin declares
+            // `com.intellij.modules.platform` as its single dependency and uses no
+            // Rider-only API. If either of those ever stops being true, this has to change.
             val riderLocal = file(providers.gradleProperty("riderLocalPath").get())
             if (riderLocal.isDirectory) {
                 local(riderLocal)
             } else {
-                create(IntelliJPlatformType.Rider, providers.gradleProperty("riderBuild").get())
+                create(
+                    providers.gradleProperty("platformType").get(),
+                    providers.gradleProperty("platformVersion").get(),
+                )
             }
         }
     }
