@@ -23,7 +23,9 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.ui.ScreenUtil
 import com.intellij.ui.awt.RelativePoint
+import com.intellij.ui.components.JBScrollPane
 import com.intellij.openapi.util.IconLoader
 import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.vfs.VirtualFile
@@ -41,9 +43,14 @@ import why.store.projectRelativePath
 import java.nio.file.Path
 import java.util.WeakHashMap
 import java.util.concurrent.Callable
+import java.awt.Dimension
+import java.awt.Rectangle
 import java.awt.event.MouseEvent
 import javax.swing.Icon
+import javax.swing.JComponent
 import javax.swing.JEditorPane
+import javax.swing.ScrollPaneConstants
+import kotlin.math.min
 
 /**
  * R7.1 and R7.2 — a gutter icon on every solid and drifted note's *resolved* range,
@@ -144,9 +151,18 @@ object WhyIcons {
  *
  * [state] contributes one informational line. It never says "warning" or asks for an
  * action (R6.2.1).
+ *
+ * [wrapWidthPx] wraps the body in a fixed-width `div`, in device pixels, for the two
+ * consumers whose component the platform owns and which therefore cannot be clamped from
+ * the outside: the gutter mark's hover tooltip ([WhyNoteGutterIconRenderer.getTooltipText])
+ * and the tool window's row tooltips. Left null for the click popup, where
+ * [notePopupComponent] measures and clamps the real component — a declared `div` width
+ * would there be a *minimum* as much as a maximum, since Swing has no `max-width`, and a
+ * two-line note would open as a half-empty box.
  */
-fun notePopupHtml(note: Note, state: Resolution): String {
+fun notePopupHtml(note: Note, state: Resolution, wrapWidthPx: Int? = null): String {
     val body = StringBuilder("<html><body>")
+    if (wrapWidthPx != null) body.append("<div style='width: ").append(wrapWidthPx).append("px'>")
     body.append("<b>").append(html(note.what)).append("</b>")
     body.append("<br/>").append(html(note.why))
     if (note.flags.isNotEmpty()) {
@@ -156,7 +172,116 @@ fun notePopupHtml(note: Note, state: Resolution): String {
         .append(html(note.id)).append(" &middot; task ").append(html(note.taskId))
         .append(" &middot; ").append(stateLine(state))
         .append("</small>")
+    if (wrapWidthPx != null) body.append("</div>")
     return body.append("</body></html>").toString()
+}
+
+/**
+ * W-17 — the size limits for a note's rendered body, in *logical* pixels. Both are
+ * [JBUI.scale]d at the point of use, so a HiDPI display or a scaled-up IDE font grows them
+ * rather than cropping the text.
+ *
+ * Two independent caps apply, and the smaller wins ([popupMaxSize]):
+ *
+ *  - **The readability cap**, [POPUP_MAX_WIDTH]/[POPUP_MAX_HEIGHT] below. This is the one
+ *    that binds on any ordinary display.
+ *  - **The screen cap**, [POPUP_MAX_SCREEN_FRACTION] of the usable bounds of the screen the
+ *    popup is opening on. A safety net for a small display or a large scale factor, where
+ *    the scaled readability cap could come out wider than the screen itself.
+ */
+object WhyPopupSize {
+    /**
+     * Maximum width. 560 logical pixels is about 80 characters of the default UI font
+     * (a 13 px sans face averages close to 7 px per character in prose), which sits at the
+     * top of the 45-90 character band that prose stays readable across. Wider than this
+     * and the eye loses the start of the next line; Kayden's screenshot was a `why`
+     * sentence rendered as one line across the whole editor.
+     */
+    const val POPUP_MAX_WIDTH: Int = 560
+
+    /**
+     * Maximum height. 360 logical pixels is roughly 20 lines at the default UI line height.
+     * A note is `what` plus a one-to-three-line `why` plus two short trailer lines, so a
+     * typical note wrapped at [POPUP_MAX_WIDTH] comes out near 6 lines; this limit only
+     * engages for a note some three times longer than that, which is the point — the scroll
+     * bar should be the exception, not the resting state.
+     */
+    const val POPUP_MAX_HEIGHT: Int = 360
+
+    /**
+     * Fraction of the usable screen the popup may occupy on either axis. Kayden offered
+     * 75% or 50%; 50% is taken because this cap exists only for the case the readability
+     * cap fails to cover, and there the conservative number is the useful one.
+     */
+    const val POPUP_MAX_SCREEN_FRACTION: Double = 0.5
+
+    /** The readability cap in device pixels. Scaled per call, not at class init. */
+    fun absoluteMax(): Dimension = Dimension(JBUI.scale(POPUP_MAX_WIDTH), JBUI.scale(POPUP_MAX_HEIGHT))
+
+    /**
+     * The effective cap: the readability cap, or the screen fraction where that is smaller.
+     *
+     * [absolute] is expected already scaled; [screen] must **not** be scaled. Screen bounds
+     * come back from [ScreenUtil] in the same coordinate space a component measures in, so
+     * putting them through [JBUI.scale] would multiply a device-pixel number by the device
+     * scale and *shrink* the popup on the display where it most needs the room.
+     *
+     * Pure, so the interesting half of the sizing is assertable without a display.
+     */
+    fun popupMaxSize(absolute: Dimension, screen: Rectangle): Dimension = Dimension(
+        min(absolute.width, (screen.width * POPUP_MAX_SCREEN_FRACTION).toInt()),
+        min(absolute.height, (screen.height * POPUP_MAX_SCREEN_FRACTION).toInt()),
+    )
+
+    /** [content] clamped to [popupMaxSize]. Never inflates: a short note stays short. */
+    fun clampedPopupSize(content: Dimension, absolute: Dimension, screen: Rectangle): Dimension =
+        popupMaxSize(absolute, screen).let {
+            Dimension(min(content.width, it.width), min(content.height, it.height))
+        }
+}
+
+/**
+ * The click popup's content: the note's HTML in a scrolling pane, sized to the content up
+ * to [WhyPopupSize]'s limits and no further.
+ *
+ * ### Why the measure-then-clamp dance
+ *
+ * A `text/html` [JEditorPane] has no width to wrap to until it is given one, and an
+ * unsized one reports the preferred size of a single unbroken line — which is the bug being
+ * fixed here. So the pane is sized to the maximum width first, with an effectively
+ * unbounded height, and only then is [JEditorPane.getPreferredSize] read; that read is the
+ * *wrapped* height. Clamping that against the maximum is what makes a long note scroll
+ * instead of growing.
+ *
+ * ### Scroll policies
+ *
+ * Vertical `AS_NEEDED`, horizontal `NEVER`. With the text wrapped there is nothing to
+ * scroll horizontally, and a horizontal bar appearing would be the signal that the wrap
+ * did not happen.
+ *
+ * A vertical bar, where the theme draws a space-taking one rather than an overlay, eats a
+ * few pixels off the right of the text column. Not compensated for: the cost is the last
+ * character or two of a wrapped line sitting under the bar on the long notes that scroll
+ * at all, against a second layout pass on every popup.
+ *
+ * [screen] is a parameter rather than fetched here so that the sizing is exercisable with a
+ * synthetic screen; [showNotePopup] supplies the real one.
+ */
+internal fun notePopupComponent(note: Note, state: Resolution, screen: Rectangle): JBScrollPane {
+    val pane = JEditorPane("text/html", notePopupHtml(note, state)).apply {
+        isEditable = false
+        background = UIUtil.getToolTipBackground()
+        border = JBUI.Borders.empty(8)
+    }
+    val absolute = WhyPopupSize.absoluteMax()
+    pane.setSize(WhyPopupSize.popupMaxSize(absolute, screen).width, Short.MAX_VALUE.toInt())
+    return JBScrollPane(pane).apply {
+        verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+        horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+        border = JBUI.Borders.empty()
+        viewport.background = UIUtil.getToolTipBackground()
+        preferredSize = WhyPopupSize.clampedPopupSize(pane.preferredSize, absolute, screen)
+    }
 }
 
 /** Informational, not a call to action. See R6.2.1. */
@@ -221,7 +346,24 @@ class WhyNoteGutterIconRenderer(
     override fun getIcon(): Icon =
         if (revealedNoteId(project) == note.id) WhyIcons.NOTE else WhyIcons.NOTE_DIMMED
 
-    override fun getTooltipText(): String = notePopupHtml(note, state)
+    /**
+     * W-17: the hover route cannot be wrapped in a scroll pane — the platform owns the
+     * component — so the width limit goes into the markup instead, which Swing's HTML
+     * renderer honours on a `div`.
+     *
+     * This is needed rather than assumed. `LineTooltipRenderer.correctLocation` sizes the
+     * tooltip from `getPreferredSize()` and clamps it to the editor's layered pane, and the
+     * content it clamps is a `ScrollPaneFactory.createScrollPane` — so an unwrapped note
+     * does not run off the screen, it runs to the full width of the editor window and grows
+     * a horizontal scroll bar. Which is exactly the screenshot W-17 came from. The tool
+     * window's row tooltips are plainer still: a Swing `toolTipText` rendered by
+     * `BasicToolTipUI`, with no clamp of any kind.
+     *
+     * No height limit and no scrolling here, for the same reason: the component is the
+     * platform's. The editor tooltip already caps its own height against the layered pane.
+     */
+    override fun getTooltipText(): String =
+        notePopupHtml(note, state, JBUI.scale(WhyPopupSize.POPUP_MAX_WIDTH))
 
     override fun getAlignment(): Alignment = Alignment.RIGHT
 
@@ -257,17 +399,23 @@ class WhyNoteGutterIconRenderer(
 
 /**
  * A plain component popup — not a `Notification`, not a `Balloon`, not a modal (R6.2.1).
- * Untestable headlessly, which is why every byte it displays comes from [notePopupHtml].
+ * Untestable headlessly, which is why every byte it displays comes from [notePopupHtml] and
+ * every pixel of its size from [notePopupComponent]. What is left here is the two things a
+ * headless test cannot reach: the real screen rectangle and the placement.
  */
 private fun showNotePopup(note: Note, state: Resolution, event: AnActionEvent) {
-    val pane = JEditorPane("text/html", notePopupHtml(note, state)).apply {
-        isEditable = false
-        background = UIUtil.getToolTipBackground()
-        border = JBUI.Borders.empty(8)
-    }
+    // The screen the click happened on, usable bounds only — dock and menu bar already
+    // subtracted. Not `Toolkit.getDefaultToolkit().screenSize`, which answers for the
+    // primary display whichever monitor the IDE is on, and counts the space the dock owns.
+    val owner = (event.inputEvent as? MouseEvent)?.component
+    val screen = if (owner != null) ScreenUtil.getScreenRectangle(owner) else ScreenUtil.getMainScreenBounds()
+
+    val content = notePopupComponent(note, state, screen)
     val popup = JBPopupFactory.getInstance()
-        .createComponentPopupBuilder(pane, pane)
+        .createComponentPopupBuilder(content, content.viewport.view as JComponent)
         .setRequestFocus(false)
+        // The clamp above sets the *initial* size. A reader who wants the whole of a long
+        // note without scrolling can still drag the popup larger.
         .setResizable(true)
         .createPopup()
 

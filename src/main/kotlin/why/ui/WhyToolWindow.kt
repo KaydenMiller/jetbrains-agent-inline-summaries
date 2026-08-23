@@ -28,6 +28,8 @@ import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.util.ui.tree.TreeUtil
+import com.intellij.util.ui.JBUI
+import why.editor.WhyPopupSize
 import why.editor.notePopupHtml
 import why.editor.revealNoteRegion
 import why.model.Note
@@ -442,7 +444,14 @@ private class WhyCellRenderer : com.intellij.ui.ColoredTreeCellRenderer() {
                 // gutter's alpha de-emphasis on the same grounds: a note is worth reading
                 // whether or not its code moved, so a drifted row is marked, not faded.
                 append(noteRowText(node), SimpleTextAttributes.REGULAR_ATTRIBUTES)
-                toolTipText = notePopupHtml(node.note, node.state)
+                // W-17: a Swing `toolTipText` is rendered by `BasicToolTipUI`, which
+                // applies no width limit at all, so a long `why` becomes one unbroken
+                // line. The width goes into the markup because the component is not ours.
+                toolTipText = notePopupHtml(
+                    node.note,
+                    node.state,
+                    JBUI.scale(WhyPopupSize.POPUP_MAX_WIDTH),
+                )
             }
             is String -> append(node, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES)
         }
